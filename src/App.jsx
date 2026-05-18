@@ -89,6 +89,9 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
 
   const recognitionRef = useRef(null);
   const bottomRef = useRef(null);
+  const keepListeningRef = useRef(false);
+  const restartTimerRef = useRef(null);
+  const saveQueueRef = useRef(Promise.resolve());
 
   const isSpeechSupported = useMemo(() => {
     return typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
@@ -138,6 +141,16 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
     return () => window.removeEventListener("storage", onStorage);
   }, [roomName]);
 
+  useEffect(() => {
+    return () => {
+      keepListeningRef.current = false;
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+      }
+      recognitionRef.current?.stop();
+    };
+  }, []);
+
   async function addRecord(text) {
     const cleanText = text.trim();
     if (!cleanText) return;
@@ -157,6 +170,14 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
     await addDoc(collection(db, "rooms", roomName, "records"), nextRecord);
   }
 
+  function queueRecord(text) {
+    saveQueueRef.current = saveQueueRef.current
+      .then(() => addRecord(text))
+      .catch(() => {
+        setError("발언 기록을 저장하지 못했습니다. 인터넷 연결 상태를 확인한 뒤 다시 시도해 주세요.");
+      });
+  }
+
   function getSpeechErrorMessage(errorCode) {
     const messages = {
       "not-allowed": "마이크 권한이 차단되었습니다. 브라우저 주소창 왼쪽의 권한 설정에서 마이크를 허용해 주세요.",
@@ -172,9 +193,16 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
 
   function startListening() {
     setError("");
+    keepListeningRef.current = true;
+
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
 
     if (!isSpeechSupported) {
       setError("현재 브라우저에서는 음성 인식이 지원되지 않습니다. Chrome 또는 Edge에서 실행해 주세요. Netlify 같은 https 배포 주소에서 다시 실행해 주세요.");
+      keepListeningRef.current = false;
       return;
     }
 
@@ -205,25 +233,50 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
 
       if (interim) setLiveText(interim);
       if (finalText) {
-        addRecord(finalText);
+        queueRecord(finalText);
         setLiveText("");
       }
     };
 
     recognition.onerror = (event) => {
       setError(getSpeechErrorMessage(event.error));
-      setListening(false);
+
+      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event.error)) {
+        keepListeningRef.current = false;
+        setListening(false);
+      }
     };
 
     recognition.onend = () => {
+      if (!keepListeningRef.current) {
+        setListening(false);
+        return;
+      }
+
       setListening(false);
+      restartTimerRef.current = window.setTimeout(() => {
+        if (keepListeningRef.current) {
+          startListening();
+        }
+      }, 350);
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
+    try {
+      recognition.start();
+    } catch {
+      keepListeningRef.current = false;
+      setListening(false);
+      setError("음성 인식을 시작하지 못했습니다. 잠시 후 다시 기록 시작을 눌러 주세요.");
+    }
   }
 
   function stopListening() {
+    keepListeningRef.current = false;
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     recognitionRef.current?.stop();
     setListening(false);
   }
