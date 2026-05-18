@@ -14,13 +14,11 @@ import {
 } from "firebase/firestore";
 
 /*
-  세미나 라이브 기록판 - 프로토타입
+  세미나 라이브 기록판
 
   목적
   - 진행자 휴대폰: 음성을 텍스트로 변환해 발언 기록에 추가
   - 조원 기기: 같은 방의 발언 기록을 읽기 전용으로 확인
-  - 현재 프로토타입은 localStorage 기반입니다.
-  - 여러 기기 실시간 공유를 하려면 아래 STORAGE_MODE를 "firebase"로 바꾸고 Firebase 코드를 연결하면 됩니다.
 
   주의
   - Web Speech API는 Chrome/Edge 계열 브라우저에서 가장 잘 작동합니다.
@@ -384,6 +382,8 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
 
 
   async function clearRecords() {
+    if (viewerLocked || mode !== "host") return;
+
     const ok = window.confirm("현재 방의 발언 기록을 모두 삭제할까요?");
     if (!ok) return;
 
@@ -468,15 +468,15 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <header className="mb-5 rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-2xl shadow-black/20">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="mb-1 text-sm font-medium text-cyan-300">Socratic Seminar Tool</p>
-              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">세미나 라이브 기록판</h1>
-              <p className="mt-2 text-sm text-slate-400">진행자 휴대폰에서 나온 발언을 조원들이 읽기 전용으로 확인하는 프로토타입입니다.</p>
-            </div>
+        {!viewerLocked && (
+          <header className="mb-5 rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-2xl shadow-black/20">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="mb-1 text-sm font-medium text-cyan-300">Socratic Seminar Tool</p>
+                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">세미나 라이브 기록판</h1>
+                <p className="mt-2 text-sm text-slate-400">진행자 휴대폰에서 나온 발언을 조원들이 읽기 전용으로 확인합니다.</p>
+              </div>
 
-            {!viewerLocked && (
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => setMode("host")}
@@ -495,100 +495,94 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
                   <span>👀</span> 보기 전용
                 </button>
               </div>
-            )}
-          </div>
-        </header>
-
-        <main className="grid flex-1 gap-5 lg:grid-cols-[320px_1fr]">
-          <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-xl shadow-black/10">
-            <label className="mb-2 block text-sm font-semibold text-slate-300">방 이름</label>
-            <input
-              value={roomName}
-              onChange={(event) => setRoomName(event.target.value || DEFAULT_ROOM)}
-              className="mb-4 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-slate-100 outline-none focus:border-cyan-400"
-              placeholder="예: 1조"
-            />
-
-            <div className="mb-4 rounded-2xl bg-slate-950 p-4">
-              <p className="text-sm text-slate-400">현재 모드</p>
-              <p className="mt-1 text-lg font-bold">{mode === "host" ? "진행자 화면" : "조원 보기 화면"}</p>
             </div>
+          </header>
+        )}
 
-            {mode === "host" ? (
-              <div className="space-y-3">
-                {!listening ? (
-                  <button
-                    onClick={startListening}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 font-bold text-slate-950 transition hover:bg-cyan-300"
-                  >
-                    <span>🎙️</span> 기록 시작
-                  </button>
-                ) : (
-                  <button
-                    onClick={stopListening}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-400 px-4 py-3 font-bold text-slate-950 transition hover:bg-rose-300"
-                  >
-                    <span>⏸️</span> 일시정지
-                  </button>
-                )}
+        <main className={`grid flex-1 gap-5 ${viewerLocked ? "" : "lg:grid-cols-[320px_1fr]"}`}>
+          {!viewerLocked && (
+            <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-xl shadow-black/10">
+              <label className="mb-2 block text-sm font-semibold text-slate-300">방 이름</label>
+              <input
+                value={roomName}
+                onChange={(event) => setRoomName(event.target.value || DEFAULT_ROOM)}
+                className="mb-4 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-slate-100 outline-none focus:border-cyan-400"
+                placeholder="예: 1조"
+              />
 
-                <button
-                  onClick={clearRecords}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
-                >
-                  <span>🗑️</span> 기록 초기화
-                </button>
-
-                <button
-                  onClick={() => setShowQrWindow(true)}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
-                >
-                  <span>📱</span> QR 안내 창 열기
-                </button>
-
-                <button
-                  onClick={copyViewerLink}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
-                >
-                  <span>🔗</span> 조원용 링크 복사
-                </button>
-
-                {copied && <p className="text-center text-sm font-semibold text-cyan-300">링크가 복사되었습니다.</p>}
+              <div className="mb-4 rounded-2xl bg-slate-950 p-4">
+                <p className="text-sm text-slate-400">현재 모드</p>
+                <p className="mt-1 text-lg font-bold">{mode === "host" ? "진행자 화면" : "조원 보기 화면"}</p>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <button
-                  onClick={refreshRecords}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
-                >
-                  <span>🔄</span> 기록 새로고침
-                </button>
-                <div className="rounded-2xl bg-slate-950 p-4 text-sm leading-6 text-slate-400">
-                  이 화면은 읽기 전용입니다. 조원은 이곳에서 질문자의 발언을 확인하고, 메모는 종이에 따로 작성하면 됩니다.
+
+              {mode === "host" && !viewerLocked ? (
+                <div className="space-y-3">
+                  {!listening ? (
+                    <button
+                      onClick={startListening}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 font-bold text-slate-950 transition hover:bg-cyan-300"
+                    >
+                      <span>🎙️</span> 기록 시작
+                    </button>
+                  ) : (
+                    <button
+                      onClick={stopListening}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-400 px-4 py-3 font-bold text-slate-950 transition hover:bg-rose-300"
+                    >
+                      <span>⏸️</span> 일시정지
+                    </button>
+                  )}
+
+                  <button
+                    onClick={clearRecords}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
+                  >
+                    <span>🗑️</span> 기록 초기화
+                  </button>
+
+                  <button
+                    onClick={() => setShowQrWindow(true)}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
+                  >
+                    <span>📱</span> QR 안내 창 열기
+                  </button>
+
+                  <button
+                    onClick={copyViewerLink}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
+                  >
+                    <span>🔗</span> 조원용 링크 복사
+                  </button>
+
+                  {copied && <p className="text-center text-sm font-semibold text-cyan-300">링크가 복사되었습니다.</p>}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="space-y-3">
+                  <button
+                    onClick={refreshRecords}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-800 px-4 py-3 font-semibold text-slate-200 transition hover:bg-slate-700"
+                  >
+                    <span>🔄</span> 기록 새로고침
+                  </button>
+                </div>
+              )}
 
-            {error && (
-              <div className="mt-4 flex gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">
-                <span className="mt-0.5 shrink-0">⚠️</span>
-                <p>{error}</p>
-              </div>
-            )}
+              {error && (
+                <div className="mt-4 flex gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">
+                  <span className="mt-0.5 shrink-0">⚠️</span>
+                  <p>{error}</p>
+                </div>
+              )}
 
-            <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs leading-5 text-slate-500">
-              <p className="font-semibold text-slate-400">프로토타입 안내</p>
-              <p className="mt-1">현재 버전은 같은 브라우저/기기 테스트용 localStorage 방식입니다. 실제 여러 기기 공유는 Firebase 연결 후 사용합니다.</p>
-            </div>
-          </section>
+            </section>
+          )}
 
-          <section className="flex min-h-[560px] flex-col rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-xl shadow-black/10">
+          <section className={`flex flex-col rounded-3xl border border-slate-800 bg-slate-900/80 p-5 shadow-xl shadow-black/10 ${viewerLocked ? "min-h-[calc(100vh-40px)]" : "min-h-[560px]"}`}>
             <div className="mb-4 flex flex-col gap-2 border-b border-slate-800 pb-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <p className="text-sm font-medium text-cyan-300">{roomName}</p>
                 <h2 className="text-xl font-bold">실시간 발언 기록</h2>
               </div>
-              <div className="text-sm text-slate-400">누적 {records.length}개 문장</div>
+              {!viewerLocked && <div className="text-sm text-slate-400">누적 {records.length}개 문장</div>}
             </div>
 
             {mode === "host" && (
@@ -612,7 +606,7 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
                 <div className="flex h-full min-h-[300px] items-center justify-center text-center text-slate-500">
                   <div>
                     <p className="text-lg font-semibold text-slate-400">아직 기록된 발언이 없습니다.</p>
-                    <p className="mt-2 text-sm">진행자 화면에서 기록 시작을 누르고 말하면 여기에 쌓입니다.</p>
+                    {!viewerLocked && <p className="mt-2 text-sm">기록 시작을 누르고 말하면 여기에 쌓입니다.</p>}
                   </div>
                 </div>
               ) : (
