@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { initializeApp } from "firebase/app";
+import QRCode from "qrcode";
 import {
   addDoc,
   collection,
@@ -40,6 +41,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const DEFAULT_ROOM = "1조";
+const MAX_RECORD_TEXT_LENGTH = 120;
+const RESTART_DELAY_MS = 150;
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -70,10 +73,61 @@ function writeLocalRecords(roomName, records) {
   localStorage.setItem(getRoomKey(roomName), JSON.stringify(records));
 }
 
+function splitLongText(text) {
+  const cleanText = text.trim().replace(/\s+/g, " ");
+  if (!cleanText) return [];
+  if (cleanText.length <= MAX_RECORD_TEXT_LENGTH) return [cleanText];
+
+  const sentenceParts = cleanText.match(/[^.!?。！？]+[.!?。！？]?/g) || [cleanText];
+  const chunks = [];
+
+  function pushLongPart(part) {
+    let remaining = part.trim();
+    while (remaining.length > MAX_RECORD_TEXT_LENGTH) {
+      const slice = remaining.slice(0, MAX_RECORD_TEXT_LENGTH + 1);
+      const breakIndex = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf(","));
+      const cutIndex = breakIndex > 40 ? breakIndex : MAX_RECORD_TEXT_LENGTH;
+      chunks.push(remaining.slice(0, cutIndex).trim());
+      remaining = remaining.slice(cutIndex).trim();
+    }
+    if (remaining) chunks.push(remaining);
+  }
+
+  let current = "";
+  sentenceParts.forEach((part) => {
+    const trimmedPart = part.trim();
+    if (!trimmedPart) return;
+
+    if (trimmedPart.length > MAX_RECORD_TEXT_LENGTH) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      pushLongPart(trimmedPart);
+      return;
+    }
+
+    const next = current ? `${current} ${trimmedPart}` : trimmedPart;
+    if (next.length > MAX_RECORD_TEXT_LENGTH) {
+      if (current) chunks.push(current);
+      current = trimmedPart;
+    } else {
+      current = next;
+    }
+  });
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 export default function SocraticSeminarLiveTranscriptPrototype() {
   const [roomName, setRoomName] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get("room") || DEFAULT_ROOM;
+  });
+  const [viewerLocked] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("mode") === "viewer";
   });
   const [mode, setMode] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -86,9 +140,12 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [showQrWindow, setShowQrWindow] = useState(false);
+  const [qrCode, setQrCode] = useState({ dataUrl: "", viewerUrl: "" });
 
   const recognitionRef = useRef(null);
+  const recordsPanelRef = useRef(null);
   const bottomRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
   const keepListeningRef = useRef(false);
   const restartTimerRef = useRef(null);
   const saveQueueRef = useRef(Promise.resolve());
@@ -96,6 +153,11 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
   const isSpeechSupported = useMemo(() => {
     return typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window);
   }, []);
+
+  const viewerUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomName)}&mode=viewer`;
+  }, [roomName]);
 
   useEffect(() => {
     if (STORAGE_MODE === "local") {
@@ -124,8 +186,18 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
   }, [records, roomName]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (shouldAutoScrollRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [records, liveText]);
+
+  function handleRecordsScroll() {
+    const panel = recordsPanelRef.current;
+    if (!panel) return;
+
+    const distanceFromBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom < 80;
+  }
 
   useEffect(() => {
     const onStorage = (event) => {
@@ -151,23 +223,52 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
     };
   }, []);
 
-  async function addRecord(text) {
-    const cleanText = text.trim();
-    if (!cleanText) return;
+  useEffect(() => {
+    if (!showQrWindow || !viewerUrl) return;
 
-    const nextRecord = {
-      id: makeId(),
-      text: cleanText,
-      time: formatTime(),
-      createdAt: Date.now(),
+    let isActive = true;
+
+    QRCode.toDataURL(viewerUrl, {
+      width: 340,
+      margin: 1,
+      errorCorrectionLevel: "M",
+      color: {
+        dark: "#0f172a",
+        light: "#ffffff",
+      },
+    })
+      .then((url) => {
+        if (isActive) setQrCode({ dataUrl: url, viewerUrl });
+      })
+      .catch(() => {
+        if (isActive) setError("QR코드를 만들지 못했습니다. 링크 복사를 사용해 주세요.");
+      });
+
+    return () => {
+      isActive = false;
     };
+  }, [showQrWindow, viewerUrl]);
+
+  async function addRecord(text) {
+    const textParts = splitLongText(text);
+    if (textParts.length === 0) return;
+
+    const now = Date.now();
+    const time = formatTime();
+    const nextRecords = textParts.map((textPart, index) => ({
+      id: makeId(),
+      text: textPart,
+      time,
+      createdAt: now + index,
+    }));
 
     if (STORAGE_MODE === "local") {
-      setRecords((prev) => [...prev, nextRecord]);
+      setRecords((prev) => [...prev, ...nextRecords]);
       return;
     }
 
-    await addDoc(collection(db, "rooms", roomName, "records"), nextRecord);
+    const recordsRef = collection(db, "rooms", roomName, "records");
+    await Promise.all(nextRecords.map((nextRecord) => addDoc(recordsRef, nextRecord)));
   }
 
   function queueRecord(text) {
@@ -258,7 +359,7 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
         if (keepListeningRef.current) {
           startListening();
         }
-      }, 350);
+      }, RESTART_DELAY_MS);
     };
 
     recognitionRef.current = recognition;
@@ -304,11 +405,7 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
   }
 
   function getViewerUrl() {
-    return `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomName)}&mode=viewer`;
-  }
-
-  function getQrUrl() {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(getViewerUrl())}`;
+    return viewerUrl;
   }
 
   async function copyViewerLink() {
@@ -337,8 +434,12 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
             조원은 휴대폰 카메라로 QR코드를 찍고 들어오면 발언 기록을 읽기 전용으로 볼 수 있습니다.
           </p>
 
-          <div className="my-8 rounded-[2rem] bg-white p-5 shadow-xl shadow-black/30">
-            <img src={getQrUrl()} alt="조원용 접속 QR코드" className="h-[260px] w-[260px] sm:h-[340px] sm:w-[340px]" />
+          <div className="my-8 flex h-[300px] w-[300px] items-center justify-center rounded-[2rem] bg-white p-5 shadow-xl shadow-black/30 sm:h-[380px] sm:w-[380px]">
+            {qrCode.viewerUrl === viewerUrl && qrCode.dataUrl ? (
+              <img src={qrCode.dataUrl} alt="조원용 접속 QR코드" className="h-[260px] w-[260px] sm:h-[340px] sm:w-[340px]" />
+            ) : (
+              <p className="text-sm font-semibold text-slate-500">QR코드 생성 중...</p>
+            )}
           </div>
 
           <p className="mb-6 max-w-2xl break-all rounded-2xl bg-slate-950 px-4 py-3 text-sm leading-6 text-slate-400">{getViewerUrl()}</p>
@@ -375,24 +476,26 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
               <p className="mt-2 text-sm text-slate-400">진행자 휴대폰에서 나온 발언을 조원들이 읽기 전용으로 확인하는 프로토타입입니다.</p>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setMode("host")}
-                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  mode === "host" ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                }`}
-              >
-                <span>👑</span> 진행자
-              </button>
-              <button
-                onClick={() => setMode("viewer")}
-                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  mode === "viewer" ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                }`}
-              >
-                <span>👀</span> 보기 전용
-              </button>
-            </div>
+            {!viewerLocked && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setMode("host")}
+                  className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                    mode === "host" ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                  }`}
+                >
+                  <span>👑</span> 진행자
+                </button>
+                <button
+                  onClick={() => setMode("viewer")}
+                  className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                    mode === "viewer" ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                  }`}
+                >
+                  <span>👀</span> 보기 전용
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
@@ -500,7 +603,11 @@ export default function SocraticSeminarLiveTranscriptPrototype() {
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto rounded-3xl bg-slate-950 p-4">
+            <div
+              ref={recordsPanelRef}
+              onScroll={handleRecordsScroll}
+              className="flex-1 overflow-y-auto rounded-3xl bg-slate-950 p-4"
+            >
               {records.length === 0 ? (
                 <div className="flex h-full min-h-[300px] items-center justify-center text-center text-slate-500">
                   <div>
